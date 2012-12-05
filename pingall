@@ -1,0 +1,30 @@
+#!/usr/bin/ruby -Ku
+
+require 'ping'
+require 'resolv'
+require 'socket'
+
+print "PING ALL \n"
+
+#my_addr_str = IPSocket::getaddress(Socket::gethostname)
+if ARGV[0] == nil then
+  my_addr_str = "192.168.192.0"
+else
+  my_addr_str = ARGV[0]
+end
+
+lastdot = my_addr_str.rindex(".")
+
+addr_prefix = my_addr_str[0..lastdot]
+
+p "Probe #{addr_prefix}"
+
+1.upto 254 do |n|
+  if Ping.pingecho "#{addr_prefix}#{n}", 0.1 then
+    print "#{addr_prefix}#{n} is ALIVE\n"
+  else
+    #print " #{addr_prefix}#{n} not respinding\n"
+  end
+end
+
+print "DONE\n"

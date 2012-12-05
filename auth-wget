@@ -1,0 +1,24 @@
+#!/bin/sh
+
+# this is what we would like to do
+# wget --header 'Cookie:A=B' https://example.com/
+
+# collect .txt by default
+OPTS=" -r -l 1 -A txt "
+
+# usage:
+#	auth-wget url cookie-name cookie-val
+url=$1
+ckname=$2
+ckval=$3
+dq=\'
+ckpre=Cookie:
+
+ckstr=$dq$ckpre$ckname"="$ckval$dq
+ckopt=" --header $ckstr "
+
+echo cookie is $ckstr
+
+echo $OPTS$ckopt$url
+
+wget $OPTS$ckopt$url

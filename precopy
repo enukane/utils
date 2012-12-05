@@ -1,0 +1,21 @@
+#!/bin/sh
+
+#
+# insert space at head of each line in clipboard
+
+export TMP=`mktemp -t tmp`
+
+while getopts t opt
+do
+	case ${opt} in
+	t)
+	echo "* description" > $TMP
+	echo "" >> $TMP
+	echo "* implementation" >> $TMP;;
+	esac
+done
+
+pbpaste | sed -e 's/^/ /g' | sed -e 's/ *$/ /g' >> $TMP
+cat $TMP | pbcopy
+
+rm $TMP

@@ -1,0 +1,6 @@
+#!/bin/sh
+export CVS_RSH="ssh"
+export CVSROOT="anoncvs@anoncvs.NetBSD.org:/cvsroot"
+
+echo "GONNA FETCH SRCS"
+cvs checkout -A -P src

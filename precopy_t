@@ -1,0 +1,4 @@
+#!/bin/sh
+export TMP=/tmp/precopy
+pbpaste | sed -e 's/^/ /g' | sed -e 's/ *$/ /g' > $TMP
+cat $TMP | pbcopy

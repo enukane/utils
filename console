@@ -1,0 +1,57 @@
+#!/usr/bin/ruby
+
+# console record
+home = ENV['HOME']
+homecons = "#{home}/.console"
+begin
+  if File::ftype(homecons) == "directory" then
+    # nothing to do
+  else
+    print "there is file \"#{homecons}\" : can't mkdir"
+    exit
+  end
+rescue
+  "it's first time to user this : mkdir #{homecons}"
+  Dir::mkdir(homecons)
+end
+
+# get opened console
+opened = Dir.entries(homecons)
+
+# target console
+devpath = "/dev/"
+terms = Dir.entries(devpath).select {|path| path.match(/^tty.usbserial.*/)}
+
+print " ### SERIAL in #{devpath} ### \n"
+
+terms.each_with_index { |item, index|
+  used = " : already opened" if opened.include? item
+  print "#{index} : #{devpath}#{item} #{used}\n"
+}
+
+print"\nEnter console number [0] : "
+num = gets.strip.to_i
+
+print "YOU CHOOSE #{num} : "
+term = terms[num]
+if nil == term then
+  print "invalid number\n"
+  exit
+end
+print "#{devpath}#{term}\n"
+
+print "\nEnter console baudrate [9600] : "
+baudrate = gets.strip.to_i
+baudrate = 9600 if baudrate == 0
+
+print "YOU CHOOSE #{baudrate}\n"
+
+# save console opened log
+system("echo #{Process.pid} > #{homecons}/#{term}")
+
+# open console
+system("screen #{devpath}#{term} #{baudrate}");
+
+# cleanup
+system("rm #{homecons}/#{term}")
+print "bye\n"
