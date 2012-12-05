@@ -1,5 +1,8 @@
 #!/bin/sh
 
+# wget with basic authentication passing
+#  required to get cookie beforehand
+
 # this is what we would like to do
 # wget --header 'Cookie:A=B' https://example.com/
 

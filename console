@@ -1,5 +1,8 @@
 #!/usr/bin/ruby
 
+# get serial console over usb-serial adapter
+#  Mac Only
+
 # console record
 home = ENV['HOME']
 homecons = "#{home}/.console"

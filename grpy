@@ -1,2 +1,5 @@
 #!/bin/sh
+
+# grep recursivly execept for svn directory
+
 grep -rn $* * | grep -v svn

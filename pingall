@@ -1,5 +1,7 @@
 #!/usr/bin/ruby -Ku
 
+# ping all /24 host
+
 require 'ping'
 require 'resolv'
 require 'socket'
