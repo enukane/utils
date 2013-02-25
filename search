@@ -1,0 +1,39 @@
+#!/bin/env ruby
+
+# purpose of this command
+#   grep through source directory(svn)
+#   provide easy access for editing found file
+#
+#   usage: search <expression>
+
+resp = `grep -rn "#{ARGV[0]}" * | grep -v svn`
+resps = resp.split("\n")
+
+exit if resp.length == nil
+
+prevfile = ""
+prevnum  = -1
+flist = Hash::new
+
+resps.each do |line|
+  fname = line.split(":")[0]
+  if prevfile != fname then
+    prevnum+=1
+    prevfile = fname
+    flist[prevnum] = fname
+    print "#{prevnum}\t"
+  else
+    print "\t"
+  end
+
+  print line + "\n"
+end
+
+print "Enter filenumber to open (ENTER to exit) => "
+fnumstr = STDIN.gets.strip
+exit if fnumstr == ""
+fnum = fnumstr.to_i
+
+fname = flist[fnum]
+exit unless fname
+system("#{ENV['EDITOR']} #{flist[fnum]}")
