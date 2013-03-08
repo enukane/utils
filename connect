@@ -1,0 +1,52 @@
+#!/bin/sh
+
+# The purpose of this script is to remember "once connected host"
+# by short name to make later recalling easy. Once give enough info
+# (e.g. IP address, username, e.t.c.), the script generates special
+# script as "connect_$name".
+#
+# Expample:
+#     1. name host as "hoge"
+#            $ connect hoge   # you will be asked to give infos
+#
+#     2. later use, no more annoying questions!
+#            $ connect_hoge
+#               or
+#            $ connect hoge
+
+# change BASEDIR to move base directory
+BASEDIR=$HOME/bin
+# use ipv4 by default
+USEV4="-4"
+
+NAME=$1
+
+CONSCRIPT=$BASEDIR/connect_$NAME
+
+if [ -f $CONSCRIPT ]; then
+	sh $CONSCRIPT
+	exit
+fi
+
+
+echo This is New Host : $HOST
+echo "Enter IP Address/Host : "
+read addr
+echo "Enter username [$USER]: "
+read user
+echo "Any options? : "
+read options
+
+case $user in
+	"")
+		echo "default user ($USER)"
+		user=$USER
+		;;
+esac
+
+touch $CONSCRIPT
+echo "#!/bin/sh" > $CONSCRIPT
+echo "ssh $USEV4 $addr -l$user $options" >> $CONSCRIPT
+chmod a+x $CONSCRIPT
+
+ssh $USEV4 $addr -l$user $options
