@@ -1,0 +1,7 @@
+#!/bin/sh
+
+# run on /usr/
+# don't forget to chown
+
+export CVSROOT=anoncvs@anoncvs.jp.openbsd.org:/cvs
+cvs -d $CVSROOT checkout -P src/sys
