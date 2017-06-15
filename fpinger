@@ -18,7 +18,8 @@ def arp addr
   data = io.read
   io.close
 
-  match = data.match(REG_ARP)
+  line = data.split("\n")[-1]
+  match = line.match(REG_ARP)
   macaddr = (fill_0(match[1])) + ":" + (fill_0(match[2])) + ":" + (fill_0(match[3]))
 
   return macaddr
