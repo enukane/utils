@@ -1,0 +1,50 @@
+#!/usr/bin/env ruby
+require "ouisearch"
+
+NETMASK=ARGV.shift
+
+REG_ALIVE=/^(.+) is alive$/
+REG_ARP=/^.+ \(.+\) at ([^:]{1,2}):([^:]{1,2}):([^:]{1,2}).+ on (.+)$/
+
+def fill_0 str
+  if str.length == 1
+    return "0" + str
+  end
+  return str
+end
+
+def arp addr
+  io = IO.popen("arp #{addr}")
+  data = io.read
+  io.close
+
+  match = data.match(REG_ARP)
+  macaddr = (fill_0(match[1])) + ":" + (fill_0(match[2])) + ":" + (fill_0(match[3]))
+
+  return macaddr
+end
+
+alives = {}
+ouisearch = OuiSearch.new
+
+io = IO.popen("fping -g #{NETMASK} 2>/dev/null")
+
+while line = io.gets
+  break if line == nil or line.length == 0
+
+  match = line.match(REG_ALIVE)
+  next unless match
+
+  addr = match[1]
+  macaddr = arp(addr)
+  oui = ouisearch.execute(macaddr)
+
+
+  alives[addr] = {:macaddr => macaddr, :oui => oui}
+end
+
+io.close
+
+alives.sort_by{|a| a[0].split(".").map{|i| i.to_i}}.each do |k, v|
+  puts "#{k}\t#{v[:macaddr]}\t#{v[:oui]}"
+end
