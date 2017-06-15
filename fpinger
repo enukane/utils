@@ -20,6 +20,7 @@ def arp addr
 
   line = data.split("\n")[-1]
   match = line.match(REG_ARP)
+  return nil unless match
   macaddr = match[1,6].map{|elm| fill_0(elm)}.join(":")
 
   return macaddr
@@ -38,7 +39,7 @@ while line = io.gets
 
   addr = match[1]
   macaddr = arp(addr)
-  oui = ouisearch.execute(macaddr[0,8])
+  oui = ouisearch.execute(macaddr[0,8]) unless macaddr.nil?
 
   alives[addr] = {:macaddr => macaddr, :oui => oui}
 end
