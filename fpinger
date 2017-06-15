@@ -47,5 +47,5 @@ end
 io.close
 
 alives.sort_by{|a| a[0].split(".").map{|i| i.to_i}}.each do |k, v|
-  puts "#{k}\t#{v[:macaddr]}\t#{v[:oui]}"
+  puts "#{k}\t#{v[:macaddr] || "00:00:00:00:00:00"}\t#{v[:oui]}"
 end
