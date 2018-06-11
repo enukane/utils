@@ -1,0 +1,57 @@
+#!/usr/bin/env ruby
+
+require "net/ping"
+
+TIMEOUT=2
+
+begin
+  Process.euid = 0
+rescue => e
+  STDERR.puts "Failed to set euid to root (#{e})"
+  exit 1
+end
+
+flag_term = false
+
+Signal.trap("INT") do |signo|
+  flag_term = true
+end
+
+
+loop do
+  break if flag_term
+  now = Time.now
+  now_str = now.strftime("%Y-%m-%d %H:%M:%S")
+  print "#{now_str}\t"
+
+  gwaddr = nil
+
+  begin
+    gwaddr = `netstat -rn | awk '/^default/{print $2}' | grep -E '^[0-9]{0,2}\.'`.split[0]
+    if gwaddr.nil? or gwaddr.empty?
+      raise "No Gateway"
+    end
+    print "[#{gwaddr}]\t"
+  rescue => e
+    print e.message
+    $stdout.flush
+    sleep 1
+    next
+  end
+  begin
+    icmp = Net::Ping::ICMP.new(gwaddr, nil, TIMEOUT)
+    if icmp.ping
+      puts "OK\t#{sprintf("%.3f", icmp.duration * 1000)} ms"
+    else
+      puts "NG"
+    end
+  rescue Errno::EHOSTUNREACH
+    puts "NG\tunreachable"
+  rescue Errno::EHOSTDOWN
+    puts "NG\thostdown"
+  rescue => e
+    puts "NG\t#{e}"
+  end
+  $stdout.flush
+  sleep 1
+end

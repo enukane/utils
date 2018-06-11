@@ -23,7 +23,7 @@ opened = Dir.entries(homecons)
 
 # target console
 devpath = "/dev/"
-terms = Dir.entries(devpath).select {|path| path.match(/^tty.usbserial.*/)}
+terms = Dir.entries(devpath).select {|path| path.match(/^tty\.(usbserial.*|SLAB_USBtoUART)/)}
 
 print " ### SERIAL in #{devpath} ### \n"
 

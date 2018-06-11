@@ -1,0 +1,14 @@
+#!/usr/bin/env ruby
+
+dst = ARGV.shift
+
+io = IO.popen("pbpaste")
+line = io.read
+io.close
+
+if line.match(/^https:\/\/github.com\/(.+)$/)
+  puts "cloning #{$1} from github..."
+  system("git clone #{line.strip}#{" #{dst}" if dst}")
+else
+  STDERR.puts("url #{line.strip} is not github")
+end

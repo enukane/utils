@@ -1,0 +1,57 @@
+#!/usr/bin/env ruby
+
+require "optparse"
+
+class UtilClass # FIXME: change name
+  def self.default_options
+    {
+      # TODO: fill default options
+    }
+  end
+
+  def initialize args={}
+  end
+
+  # TODO: fill working methods
+end
+
+if __FILE__ == $0
+  opt = OptionParser.new
+
+  # FIXME: change name
+  OPTS=UtilClass.default_options
+
+  # TODO: fill options
+  opt.on("-f", "--force", "force (no value)") {|v|
+    OPTS[:force] = true
+  }
+
+  opt.on("-v", "--value [value]", "set value (with value)") {|v|
+    OPTS[:value] = v
+  }
+
+  #### this part is not expected to change ####
+  (class<<self;self;end).module_eval do
+    define_method(:usage) do |msg|
+      puts opt.to_s
+      puts "error: #{msg}" if msg
+      exit 1
+    end
+  end
+
+  begin
+    rest = opt.parse(ARGV)
+    if rest.length != 0
+      usage nil
+    end
+  rescue
+    usage $!.to_s
+  end
+  ############################################
+
+
+  # TODO: do work
+  utils = UtilsClass.new(OPTS)
+
+  exit 0
+end

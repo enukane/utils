@@ -1,0 +1,43 @@
+#!/usr/bin/env ruby
+
+require "net/ping"
+
+TARGET= ARGV.shift || "8.8.8.8"
+TIMEOUT=2
+
+begin
+  Process.euid = 0
+rescue => e
+  STDERR.puts "Failed to set euid to root (#{e})"
+  exit 1
+end
+
+flag_term = false
+
+Signal.trap("INT") do |signo|
+  flag_term = true
+end
+
+icmp = Net::Ping::ICMP.new(TARGET, nil, TIMEOUT)
+
+loop do
+  break if flag_term
+  now = Time.now
+  now_str = now.strftime("%Y-%m-%d %H:%M:%S")
+  print "#{now_str}\t"
+  begin
+    if icmp.ping
+      puts "OK\t#{sprintf("%.3f", icmp.duration * 1000)} ms"
+    else
+      puts "NG"
+    end
+  rescue Errno::EHOSTUNREACH
+    puts "NG\tunreachable"
+  rescue Errno::EHOSTDOWN
+    puts "NG\thostdown"
+  rescue => e
+    puts "NG\t#{e}"
+  end
+  $stdout.flush
+  sleep 1
+end

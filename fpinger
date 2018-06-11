@@ -3,7 +3,9 @@ require "ouisearch"
 
 NETMASK=ARGV.shift
 
-REG_ALIVE=/^(.+) is alive$/
+$start = Time.now
+
+REG_ALIVE=/^(.+)\s+: \[\d+\], \d+ bytes, \d+\.\d+ ms \(\d+\.\d+ avg, \d+% loss\)$/
 REG_ARP=/([^: ]{1,2}):([^: ]{1,2}):([^: ]{1,2}):([^: ]{1,2}):([^: ]{1,2}):([^: ]{1,2})/
 
 def fill_0 str
@@ -14,7 +16,7 @@ def fill_0 str
 end
 
 def arp addr
-  io = IO.popen("arp #{addr}")
+  io = IO.popen("arp -n #{addr}")
   data = io.read
   io.close
 
@@ -29,7 +31,7 @@ end
 alives = {}
 ouisearch = OuiSearch.new
 
-io = IO.popen("fping -g #{NETMASK} 2>/dev/null")
+io = IO.popen("fping -g #{NETMASK} -c 1 -t 1000 2>/dev/null")
 
 while line = io.gets
   break if line == nil or line.length == 0

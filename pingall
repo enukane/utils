@@ -1,8 +1,8 @@
-#!/usr/bin/ruby -Ku
+#!/usr/bin/env ruby -Ku
 
 # ping all /24 host
 
-require 'ping'
+require 'Ping'
 require 'resolv'
 require 'socket'
 
