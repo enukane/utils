@@ -25,6 +25,7 @@ loop do
   now = Time.now
   now_str = now.strftime("%Y-%m-%d %H:%M:%S")
   print "#{now_str}\t"
+  print "[#{TARGET}]\t"
   begin
     if icmp.ping
       puts "OK\t#{sprintf("%.3f", icmp.duration * 1000)} ms"

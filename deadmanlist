@@ -1,0 +1,14 @@
+#!/bin/sh
+
+TMPFILE=$(mktemp '/tmp/deadmanlist.tmp.XXXX')
+
+echo $TMPFILE
+
+for TARGET in $@; do
+	echo "$TARGET	$TARGET" >> $TMPFILE
+done
+
+deadman -l /tmp/hoge $TMPFILE
+
+
+rm $TMPFILE
