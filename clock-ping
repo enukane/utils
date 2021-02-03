@@ -3,6 +3,7 @@
 require "net/ping"
 
 TARGET= ARGV.shift || "8.8.8.8"
+SOURCE= ARGV.shift
 TIMEOUT=2
 
 begin
@@ -19,13 +20,20 @@ Signal.trap("INT") do |signo|
 end
 
 icmp = Net::Ping::ICMP.new(TARGET, nil, TIMEOUT)
+if SOURCE
+  icmp.bind(SOURCE)
+end
 
 loop do
   break if flag_term
   now = Time.now
   now_str = now.strftime("%Y-%m-%d %H:%M:%S")
   print "#{now_str}\t"
-  print "[#{TARGET}]\t"
+  if SOURCE
+    print "[#{TARGET}<-#{SOURCE}]\t"
+  else
+    print "[#{TARGET}]\t"
+  end
   begin
     if icmp.ping
       puts "OK\t#{sprintf("%.3f", icmp.duration * 1000)} ms"
