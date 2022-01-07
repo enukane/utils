@@ -9,6 +9,9 @@ DOCOMO_BAND = {
   21 => :LTE,
   28 =>  :LTE,
   42 => :LTE,
+  "n78" => :NR,
+  "n79" => :NR,
+  "n257" => :NR,
 }
 
 AU_BAND = {
@@ -20,6 +23,9 @@ AU_BAND = {
   28 => :LTE,
   41 => :LTE,
   42 => :LTE,
+  "n77" => :NR,
+  "n78" => :NR,
+  "n257" => :NR,
 }
 
 SOFTBANK_BAND = {
@@ -30,12 +36,37 @@ SOFTBANK_BAND = {
   28 =>  :LTE,
   41 => :LTE,
   42 => :LTE,
+  "n77" => :NR,
+  "n257" => :NR,
 }
 
 RAKUTEN_BAND = {
   3 => :LTE,
   18 => :LTE,
+  "n77" => :NR,
+  "n257" => :NR,
 }
+
+def keys_include?(hash, key)
+  return hash.keys.include?(key)
+end
+
+def check_mno_band(band)
+  ary = []
+  if keys_include?(DOCOMO_BAND, band)
+     ary << "docomo"
+  end
+  if keys_include?(AU_BAND, band)
+    ary << "au"
+  end
+  if keys_include?(SOFTBANK_BAND, band)
+    ary << "softbank"
+  end
+  if keys_include?(RAKUTEN_BAND, band)
+    ary << "rakuten"
+  end
+  return ary
+end
 
 case arg
 when nil
@@ -51,26 +82,14 @@ when /^[Ss]oftbank$/
   puts "SOFTBANK: " + SOFTBANK_BAND.keys.join(", ")
 when /^[Rr]akuten$/
   puts "RAKUTEN:  " + RAKUTEN_BAND.keys.join(", ")
+when /^n[0-9]+$/
+  band = arg.to_s
+  puts check_mno_band(band).join(", ")
 when /^[0-9]+$/
   band = arg.to_i
-  def keys_include?(hash, key)
-    return hash.keys.include?(key)
-  end
-
-  if keys_include?(DOCOMO_BAND, band)
-    puts "docomo"
-  end
-  if keys_include?(AU_BAND, band)
-    puts "au"
-  end
-  if keys_include?(SOFTBANK_BAND, band)
-    puts "softbank"
-  end
-  if keys_include?(RAKUTEN_BAND, band)
-    puts "rakuten"
-  end
+  puts check_mno_band(band).join(", ")
 else
-  puts "usage: 3gpp-band.rb <carrier|bandnumber>"
+  puts "usage: 3gpp-band.rb <carrier|bandnumber|nXX>"
   puts "    carrier := docomo | au | softbank | rakuten"
 end
 
