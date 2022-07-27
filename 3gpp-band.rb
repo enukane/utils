@@ -47,6 +47,11 @@ RAKUTEN_BAND = {
   "n257" => :NR,
 }
 
+LOCAL5G_BAND = {
+  "n79" => :NR,
+  "n257" => :NR,
+}
+
 def keys_include?(hash, key)
   return hash.keys.include?(key)
 end
@@ -65,6 +70,9 @@ def check_mno_band(band)
   if keys_include?(RAKUTEN_BAND, band)
     ary << "rakuten"
   end
+  if keys_include?(LOCAL5G_BAND, band)
+    ary << "local5g"
+  end
   return ary
 end
 
@@ -74,6 +82,7 @@ when nil
   puts "AU:       " + AU_BAND.keys.join(", ")
   puts "SOFTBANK: " + SOFTBANK_BAND.keys.join(", ")
   puts "RAKUTEN:  " + RAKUTEN_BAND.keys.join(", ")
+  puts "LOCAL5G:  " + LOCAL5G_BAND.keys.join(", ")
 when /^[dD]ocomo/
   puts "DOCOMO:   " + DOCOMO_BAND.keys.join(", ")
 when /^[aA][uU]$/
@@ -82,6 +91,8 @@ when /^[Ss]oftbank$/
   puts "SOFTBANK: " + SOFTBANK_BAND.keys.join(", ")
 when /^[Rr]akuten$/
   puts "RAKUTEN:  " + RAKUTEN_BAND.keys.join(", ")
+when /^[Ll]ocal5[Gg]$/
+  puts "LOCAL5G:  " + LOCAL5G_BAND.keys.join(",")
 when /^n[0-9]+$/
   band = arg.to_s
   puts check_mno_band(band).join(", ")
@@ -90,7 +101,7 @@ when /^[0-9]+$/
   puts check_mno_band(band).join(", ")
 else
   puts "usage: 3gpp-band.rb <carrier|bandnumber|nXX>"
-  puts "    carrier := docomo | au | softbank | rakuten"
+  puts "    carrier := docomo | au | softbank | rakuten | local5g"
 end
 
 
