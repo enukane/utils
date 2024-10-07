@@ -1,6 +1,12 @@
 #!/usr/bin/ruby
 
 arg = ARGV.shift
+is_freqon = false
+if arg == "f"
+  is_freqon = true
+  arg = ARGV.shift
+end
+
 
 DOCOMO_BAND = {
   1 =>  :LTE,
@@ -52,6 +58,25 @@ LOCAL5G_BAND = {
   "n257" => :NR,
 }
 
+FREQMAP = {
+  1 => "2100 MHz (1920-1980/2110-2170)",
+  3 => "1800 MHz (1710-1785/1805-1880)",
+  8 => "900 MHz (880-915/925-960)",
+  11 => "1500 MHz (1427-1447/1475-1495)",
+  18 => "850 MHz (815-830/860-875)",
+  19 => "850 MHz (830-845/875-890)",
+  21 => "1500 MHz (1447-1462/1495-1510)",
+  26 => "850 MHz (814–849/859–894)",
+  28 => "700 MHz (703–748/758–803)",
+  41 => "2500 MHz (2496–2690)",
+  42 => "3500 MHz (3400–3600)",
+  "n77" => "3700 MHz (3300–4200)",
+  "n78" => "3500 MHz (3300–3800)",
+  "n79" => "4700 MHz (4400–5000)",
+  "n257" => "28 GHz (26.5-29.5)",
+
+}
+
 def keys_include?(hash, key)
   return hash.keys.include?(key)
 end
@@ -74,6 +99,9 @@ def check_mno_band(band)
     ary << "local5g"
   end
   return ary
+end
+
+def list_band_from(bands, freqon)
 end
 
 case arg

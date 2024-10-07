@@ -74,6 +74,8 @@ opt.on("-o PATH", "--output=PATH") {|v|
 (class<<self;self;end).module_eval do
   define_method(:usage) do |msg|
     puts opt.to_s
+    puts "example: "
+    puts "  % gencmd.rb -o newcmd ab:c:h"
     puts "error: #{msg}" if msg
     exit 1
   end
@@ -84,9 +86,10 @@ begin
   rest = opt.parse(ARGV)
   # XXX: this forbids option-less argument
   if rest.length != 1
-    usage nil
+    symbols = ""
+  else
+    symbols = rest[0]
   end
-  symbols = rest[0]
 rescue
   usage $!.to_s
 end

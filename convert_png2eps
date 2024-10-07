@@ -1,0 +1,6 @@
+#!/bin/sh
+
+for arg in "$@"; do
+	echo "processing $arg"
+	convert $arg $arg.eps
+done
