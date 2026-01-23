@@ -1,0 +1,261 @@
+#!/usr/bin/env ruby
+
+require 'socket'
+require 'optparse'
+require 'timeout'
+
+class ClockPingV2
+  ICMP_ECHO_REQUEST = 8
+  ICMP_ECHO_REPLY = 0
+
+  def initialize(target, source: nil, interval: 1.0, timeout: 2.0)
+    @target = target
+    @source = source
+    @interval = interval
+    @timeout = timeout
+    @sequence = 0
+    @identifier = Process.pid & 0xFFFF
+    @pending_requests = {}
+    @mutex = Mutex.new
+    @running = true
+    @stats = { sent: 0, received: 0, lost: 0 }
+  end
+
+  def run
+    begin
+      Process.euid = 0
+    rescue => e
+      STDERR.puts "Failed to set euid to root (#{e})"
+      exit 1
+    end
+
+    @target_addr = Socket.pack_sockaddr_in(0, resolve_host(@target))
+
+    @socket = Socket.new(Socket::AF_INET, Socket::SOCK_RAW, Socket::IPPROTO_ICMP)
+    if @source
+      @socket.bind(Socket.pack_sockaddr_in(0, @source))
+    end
+    @socket.setsockopt(Socket::SOL_SOCKET, Socket::SO_RCVTIMEO, [0, 100000].pack('l_2'))
+
+    Signal.trap("INT") do
+      @running = false
+    end
+
+    receiver_thread = Thread.new { receiver_loop }
+    timeout_checker_thread = Thread.new { timeout_checker_loop }
+    sender_loop
+
+    receiver_thread.join
+    timeout_checker_thread.join
+    @socket.close
+
+    print_summary
+  end
+
+  private
+
+  def resolve_host(host)
+    Addrinfo.getaddrinfo(host, nil, Socket::AF_INET, Socket::SOCK_RAW).first.ip_address
+  rescue
+    host
+  end
+
+  def sender_loop
+    next_send_time = Time.now
+
+    while @running
+      now = Time.now
+
+      if now >= next_send_time
+        send_ping
+        next_send_time += @interval
+        # If we've fallen behind, catch up to next valid slot
+        while next_send_time < now
+          next_send_time += @interval
+        end
+      end
+
+      sleep_time = [next_send_time - Time.now, 0.01].max
+      sleep(sleep_time)
+    end
+  end
+
+  def send_ping
+    @sequence = (@sequence + 1) & 0xFFFF
+    seq = @sequence
+    send_time = Time.now
+
+    packet = build_icmp_packet(seq)
+
+    begin
+      @socket.send(packet, 0, @target_addr)
+      @mutex.synchronize do
+        @pending_requests[seq] = { send_time: send_time, reported: false }
+        @stats[:sent] += 1
+      end
+    rescue => e
+      now_str = send_time.strftime("%Y-%m-%d %H:%M:%S.%L")
+      print_line(now_str, "NG", "send error: #{e}")
+    end
+  end
+
+  def receiver_loop
+    while @running
+      begin
+        data, addr = @socket.recvfrom_nonblock(1500)
+        receive_time = Time.now
+        process_reply(data, receive_time)
+      rescue IO::WaitReadable
+        IO.select([@socket], nil, nil, 0.1)
+      rescue => e
+        # Ignore other errors during shutdown
+      end
+    end
+  end
+
+  def process_reply(data, receive_time)
+    return if data.length < 28  # IP header (20) + ICMP header (8)
+
+    # Skip IP header (first 20 bytes typically, but check IHL)
+    ip_header_len = (data[0].ord & 0x0F) * 4
+    icmp_data = data[ip_header_len..-1]
+
+    return if icmp_data.length < 8
+
+    type = icmp_data[0].ord
+    code = icmp_data[1].ord
+    # checksum = icmp_data[2..3]
+    identifier = icmp_data[4..5].unpack('n').first
+    sequence = icmp_data[6..7].unpack('n').first
+
+    return unless type == ICMP_ECHO_REPLY
+    return unless identifier == @identifier
+
+    @mutex.synchronize do
+      if @pending_requests[sequence] && !@pending_requests[sequence][:reported]
+        send_time = @pending_requests[sequence][:send_time]
+        rtt = (receive_time - send_time) * 1000
+
+        send_time_str = send_time.strftime("%Y-%m-%d %H:%M:%S.%L")
+        print_line(send_time_str, "OK", sprintf("%.3f ms (seq=%d)", rtt, sequence))
+
+        @pending_requests[sequence][:reported] = true
+        @stats[:received] += 1
+      end
+    end
+  end
+
+  def timeout_checker_loop
+    while @running
+      sleep 0.5
+      now = Time.now
+
+      @mutex.synchronize do
+        @pending_requests.each do |seq, info|
+          next if info[:reported]
+
+          elapsed = now - info[:send_time]
+          if elapsed > @timeout
+            timeout_str = info[:send_time].strftime("%Y-%m-%d %H:%M:%S.%L")
+            print_line(timeout_str, "NG", "timeout (seq=#{seq})")
+            info[:reported] = true
+            @stats[:lost] += 1
+          end
+        end
+
+        # Clean up old entries (older than 2x timeout)
+        @pending_requests.delete_if do |seq, info|
+          info[:reported] && (now - info[:send_time]) > (@timeout * 2)
+        end
+      end
+    end
+  end
+
+  def build_icmp_packet(sequence)
+    # Type (1) + Code (1) + Checksum (2) + Identifier (2) + Sequence (2) + Data
+    type = ICMP_ECHO_REQUEST
+    code = 0
+    checksum = 0
+    data = "clockping" + Time.now.to_f.to_s
+
+    packet = [type, code, checksum, @identifier, sequence].pack('C2n3') + data
+    checksum = compute_checksum(packet)
+    packet[2..3] = [checksum].pack('n')
+    packet
+  end
+
+  def compute_checksum(data)
+    sum = 0
+    data = data + "\x00" if data.length.odd?
+
+    data.unpack('n*').each do |word|
+      sum += word
+    end
+
+    while sum >> 16 > 0
+      sum = (sum & 0xFFFF) + (sum >> 16)
+    end
+
+    ~sum & 0xFFFF
+  end
+
+  def print_line(time_str, status, detail)
+    if @source
+      puts "#{time_str}\t[#{@target}<-#{@source}]\t#{status}\t#{detail}"
+    else
+      puts "#{time_str}\t[#{@target}]\t#{status}\t#{detail}"
+    end
+    $stdout.flush
+  end
+
+  def print_summary
+    puts ""
+    puts "--- #{@target} ping statistics ---"
+    loss_pct = @stats[:sent] > 0 ? (@stats[:lost].to_f / @stats[:sent] * 100) : 0
+    puts "#{@stats[:sent]} packets transmitted, #{@stats[:received]} received, #{sprintf('%.1f', loss_pct)}% packet loss"
+  end
+end
+
+# Parse options
+options = {
+  interval: 1.0,
+  timeout: 2.0,
+  source: nil
+}
+
+parser = OptionParser.new do |opts|
+  opts.banner = "Usage: clock-ping-v2 [options] TARGET [SOURCE]"
+
+  opts.on("-i", "--interval SECONDS", Float, "Interval between pings (default: 1.0)") do |i|
+    options[:interval] = i
+  end
+
+  opts.on("-W", "--timeout SECONDS", Float, "Timeout for each ping (default: 2.0)") do |t|
+    options[:timeout] = t
+  end
+
+  opts.on("-h", "--help", "Show this help") do
+    puts opts
+    exit
+  end
+end
+
+begin
+  parser.parse!
+rescue OptionParser::InvalidOption, OptionParser::MissingArgument, OptionParser::InvalidArgument => e
+  STDERR.puts e.message
+  STDERR.puts parser
+  exit 1
+end
+
+if ARGV.empty?
+  STDERR.puts "Error: TARGET is required"
+  STDERR.puts parser
+  exit 1
+end
+
+target = ARGV.shift
+source = ARGV.shift
+
+ping = ClockPingV2.new(target, source: source, interval: options[:interval], timeout: options[:timeout])
+ping.run

@@ -1,0 +1,92 @@
+#!/bin/sh
+#
+# teets - Timestamped Echo To Stream
+# 標準入力の各行にタイムスタンプを付与してファイルに追記する
+#
+# Usage: command | teets -o output.log
+#        command | teets -o output.log -f "%Y-%m-%d %H:%M:%S"
+#
+
+set -e
+
+# デフォルト値
+OUTPUT_FILE=""
+TIME_FORMAT="%Y-%m-%d %H:%M:%S"
+ALSO_STDOUT=1
+
+# ヘルプ表示
+show_help() {
+    cat << 'EOF'
+Usage: command | teets -o <output_file> [options]
+
+Options:
+  -o, --output <file>    出力ファイル（必須）
+  -f, --format <format>  タイムスタンプのフォーマット（デフォルト: "%Y-%m-%d %H:%M:%S"）
+  -q, --quiet            標準出力への出力を抑制する
+  -h, --help             このヘルプを表示
+
+Examples:
+  ping localhost | teets -o ping.log
+  ./script.sh 2>&1 | teets -o script.log -q
+  tail -f /var/log/syslog | teets -o filtered.log -f "%H:%M:%S"
+EOF
+}
+
+# 引数解析
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -o|--output)
+            OUTPUT_FILE="$2"
+            shift 2
+            ;;
+        -f|--format)
+            TIME_FORMAT="$2"
+            shift 2
+            ;;
+        -q|--quiet)
+            ALSO_STDOUT=0
+            shift
+            ;;
+        -h|--help)
+            show_help
+            exit 0
+            ;;
+        *)
+            echo "Error: Unknown option: $1" >&2
+            show_help >&2
+            exit 1
+            ;;
+    esac
+done
+
+# 出力ファイルの指定チェック
+if [ -z "$OUTPUT_FILE" ]; then
+    echo "Error: Output file is required. Use -o <file>" >&2
+    show_help >&2
+    exit 1
+fi
+
+# 出力ディレクトリの存在チェック
+OUTPUT_DIR=$(dirname "$OUTPUT_FILE")
+if [ "$OUTPUT_DIR" != "." ] && [ ! -d "$OUTPUT_DIR" ]; then
+    echo "Error: Directory does not exist: $OUTPUT_DIR" >&2
+    exit 1
+fi
+
+# メイン処理：標準入力を1行ずつ読み込み、タイムスタンプを付与して出力
+while IFS= read -r line || [ -n "$line" ]; do
+    # タイムスタンプを取得（Linux/macOS両対応）
+    timestamp=$(date +"$TIME_FORMAT")
+    
+    # タイムスタンプ付きの行を作成
+    timestamped_line="[$timestamp] $line"
+    
+    # ファイルに追記
+    printf '%s\n' "$timestamped_line" >> "$OUTPUT_FILE"
+    
+    # -t オプションが指定されていれば標準出力にも出力
+    if [ "$ALSO_STDOUT" -eq 1 ]; then
+        printf '%s\n' "$timestamped_line"
+    fi
+done
+

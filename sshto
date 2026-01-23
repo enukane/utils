@@ -1,0 +1,439 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'fileutils'
+
+class SSHConfig
+  Entry = Struct.new(:host, :options, :start_line, :end_line)
+
+  def initialize(config_path = nil)
+    @config_path = config_path || File.expand_path("~/.ssh/config")
+    @entries = []
+    parse if File.exist?(@config_path)
+  end
+
+  attr_reader :entries, :config_path
+
+  def parse
+    @entries = []
+    return unless File.exist?(@config_path)
+
+    lines = File.readlines(@config_path)
+    current_entry = nil
+    current_start = nil
+
+    lines.each_with_index do |line, idx|
+      stripped = line.strip
+
+      if stripped =~ /^Host\s+(.+)$/i
+        if current_entry
+          current_entry.end_line = idx - 1
+          @entries << current_entry
+        end
+        current_entry = Entry.new($1.strip, {}, idx, nil)
+      elsif current_entry && stripped =~ /^(\w+)\s+(.+)$/
+        key = $1
+        value = $2.strip
+        current_entry.options[key] = value
+      end
+    end
+
+    if current_entry
+      current_entry.end_line = lines.length - 1
+      @entries << current_entry
+    end
+  end
+
+  def find(pattern)
+    @entries.select do |entry|
+      entry.host.downcase.include?(pattern.downcase) ||
+        (entry.options["HostName"] && entry.options["HostName"].downcase.include?(pattern.downcase))
+    end
+  end
+
+  def find_exact(host)
+    @entries.find { |entry| entry.host.downcase == host.downcase }
+  end
+
+  def add_entry(host, hostname, user, options = {})
+    ensure_config_dir
+
+    entry_text = "\nHost #{host}\n"
+    entry_text += "    HostName #{hostname}\n"
+    entry_text += "    User #{user}\n"
+    options.each do |key, value|
+      entry_text += "    #{key} #{value}\n"
+    end
+
+    File.open(@config_path, "a") do |f|
+      f.write(entry_text)
+    end
+
+    parse
+  end
+
+  def get_entry_text(entry)
+    return nil unless File.exist?(@config_path)
+    lines = File.readlines(@config_path)
+    lines[entry.start_line..entry.end_line].join
+  end
+
+  def update_entry(old_entry, new_text)
+    return unless File.exist?(@config_path)
+    lines = File.readlines(@config_path)
+
+    new_lines = lines[0...old_entry.start_line]
+    new_lines += new_text.lines
+    new_lines += lines[(old_entry.end_line + 1)..-1] || []
+
+    File.write(@config_path, new_lines.join)
+    parse
+  end
+
+  private
+
+  def ensure_config_dir
+    dir = File.dirname(@config_path)
+    unless File.directory?(dir)
+      FileUtils.mkdir_p(dir, mode: 0700)
+    end
+    unless File.exist?(@config_path)
+      FileUtils.touch(@config_path)
+      File.chmod(0600, @config_path)
+    end
+  end
+end
+
+class SSHTo
+  ZSH_COMPLETION = <<~'ZSH'
+    #compdef sshto
+
+    _sshto() {
+        local -a opts
+
+        opts=(
+            '-l[List entries matching PATTERN]:pattern:_sshto_hosts'
+            '--list[List entries matching PATTERN]:pattern:_sshto_hosts'
+            '-e[Edit entry for HOSTNAME]:hostname:_sshto_hosts'
+            '--edit[Edit entry for HOSTNAME]:hostname:_sshto_hosts'
+            '-a[Add new entry]'
+            '--add[Add new entry]'
+            '-h[Show help]'
+            '--help[Show help]'
+        )
+
+        _arguments -s $opts '*:hostname:_sshto_hosts'
+    }
+
+    _sshto_hosts() {
+        local -a hosts
+        if [[ -f ~/.ssh/config ]]; then
+            hosts=(${(f)"$(awk '/^Host / && !/\*/ {print $2}' ~/.ssh/config)"})
+            _describe 'hostname' hosts
+        fi
+    }
+
+    _sshto "$@"
+  ZSH
+
+  BASH_COMPLETION = <<~'BASH'
+    _sshto_completion() {
+        local cur prev opts hosts
+        COMPREPLY=()
+        cur="${COMP_WORDS[COMP_CWORD]}"
+        prev="${COMP_WORDS[COMP_CWORD-1]}"
+        opts="-l --list -e --edit -a --add -h --help"
+
+        case "${prev}" in
+            -l|--list|-e|--edit)
+                hosts=$(awk '/^Host / && !/\*/ {print $2}' ~/.ssh/config 2>/dev/null)
+                COMPREPLY=( $(compgen -W "${hosts}" -- ${cur}) )
+                return 0
+                ;;
+        esac
+
+        if [[ ${cur} == -* ]]; then
+            COMPREPLY=( $(compgen -W "${opts}" -- ${cur}) )
+            return 0
+        fi
+
+        hosts=$(awk '/^Host / && !/\*/ {print $2}' ~/.ssh/config 2>/dev/null)
+        COMPREPLY=( $(compgen -W "${hosts}" -- ${cur}) )
+    }
+
+    complete -F _sshto_completion sshto
+  BASH
+
+  def initialize
+    @config = SSHConfig.new
+    @completion_setup_messages = []
+    setup_completions
+  end
+
+  def run(args)
+    # Show completion setup messages if any
+    unless @completion_setup_messages.empty?
+      @completion_setup_messages.each { |msg| STDERR.puts msg }
+      STDERR.puts
+    end
+    options = {}
+
+    parser = OptionParser.new do |opts|
+      opts.banner = "Usage: sshto [options] <hostname>"
+      opts.separator ""
+      opts.separator "Options:"
+
+      opts.on("-l", "--list PATTERN", "List entries matching PATTERN") do |pattern|
+        options[:list] = pattern
+      end
+
+      opts.on("-e", "--edit HOSTNAME", "Edit entry for HOSTNAME") do |host|
+        options[:edit] = host
+      end
+
+      opts.on("-a", "--add", "Add new entry (interactive)") do
+        options[:add] = true
+      end
+
+      opts.on("-h", "--help", "Show this help") do
+        puts opts
+        exit
+      end
+    end
+
+    begin
+      parser.parse!(args)
+    rescue OptionParser::InvalidOption, OptionParser::MissingArgument => e
+      STDERR.puts e.message
+      STDERR.puts parser
+      exit 1
+    end
+
+    if options[:list]
+      list_entries(options[:list])
+    elsif options[:edit]
+      edit_entry(options[:edit])
+    elsif options[:add]
+      add_new_entry
+    elsif args.empty?
+      puts parser
+      exit 1
+    else
+      connect(args.first, args[1..-1])
+    end
+  end
+
+  private
+
+  def setup_completions
+    setup_zsh_completion
+    setup_bash_completion
+  end
+
+  def setup_zsh_completion
+    zsh_dir = File.expand_path("~/.zsh/completions")
+    zsh_file = File.join(zsh_dir, "_sshto")
+
+    return if File.exist?(zsh_file)
+
+    begin
+      FileUtils.mkdir_p(zsh_dir) unless File.directory?(zsh_dir)
+      File.write(zsh_file, ZSH_COMPLETION)
+      @completion_setup_messages << "[sshto] Installed zsh completion: #{zsh_file}"
+      @completion_setup_messages << "        Add to ~/.zshrc: fpath=(~/.zsh/completions $fpath)"
+      @completion_setup_messages << "        Then run: autoload -Uz compinit && compinit"
+    rescue => e
+      STDERR.puts "[sshto] Warning: Could not install zsh completion: #{e.message}"
+    end
+  end
+
+  def setup_bash_completion
+    bash_dir = File.expand_path("~/.bash_completion.d")
+    bash_file = File.join(bash_dir, "sshto")
+
+    return if File.exist?(bash_file)
+
+    begin
+      FileUtils.mkdir_p(bash_dir) unless File.directory?(bash_dir)
+      File.write(bash_file, BASH_COMPLETION)
+      @completion_setup_messages << "[sshto] Installed bash completion: #{bash_file}"
+      @completion_setup_messages << "        Add to ~/.bashrc: for f in ~/.bash_completion.d/*; do source \"$f\"; done"
+    rescue => e
+      STDERR.puts "[sshto] Warning: Could not install bash completion: #{e.message}"
+    end
+  end
+
+  def list_entries(pattern)
+    matches = @config.find(pattern)
+
+    if matches.empty?
+      puts "No entries matching '#{pattern}'"
+      return
+    end
+
+    matches.each_with_index do |entry, idx|
+      puts "=" * 50 if idx > 0
+      puts "Host: #{entry.host}"
+      entry.options.each do |key, value|
+        puts "  #{key}: #{value}"
+      end
+    end
+  end
+
+  def edit_entry(host)
+    entry = @config.find_exact(host)
+
+    unless entry
+      matches = @config.find(host)
+      if matches.empty?
+        STDERR.puts "Entry '#{host}' not found"
+        exit 1
+      elsif matches.length == 1
+        entry = matches.first
+      else
+        puts "Multiple matches found:"
+        matches.each_with_index do |e, idx|
+          puts "  #{idx + 1}. #{e.host} (#{e.options['HostName']})"
+        end
+        print "Select entry [1-#{matches.length}]: "
+        choice = STDIN.gets.to_i
+        if choice < 1 || choice > matches.length
+          STDERR.puts "Invalid selection"
+          exit 1
+        end
+        entry = matches[choice - 1]
+      end
+    end
+
+    editor = ENV['EDITOR'] || 'vi'
+    tmpfile = "/tmp/sshto_edit_#{$$}.tmp"
+
+    begin
+      File.write(tmpfile, @config.get_entry_text(entry))
+      system("#{editor} #{tmpfile}")
+
+      if $?.success?
+        new_text = File.read(tmpfile)
+        @config.update_entry(entry, new_text)
+        puts "Entry '#{entry.host}' updated"
+      else
+        STDERR.puts "Editor exited with error"
+        exit 1
+      end
+    ensure
+      File.delete(tmpfile) if File.exist?(tmpfile)
+    end
+  end
+
+  def add_new_entry
+    print "Host alias: "
+    host = STDIN.gets.chomp
+    if host.empty?
+      STDERR.puts "Host alias is required"
+      exit 1
+    end
+
+    if @config.find_exact(host)
+      STDERR.puts "Entry '#{host}' already exists. Use -e to edit."
+      exit 1
+    end
+
+    print "HostName (IP or FQDN): "
+    hostname = STDIN.gets.chomp
+    if hostname.empty?
+      STDERR.puts "HostName is required"
+      exit 1
+    end
+
+    print "User [#{ENV['USER']}]: "
+    user = STDIN.gets.chomp
+    user = ENV['USER'] if user.empty?
+
+    print "Port [22]: "
+    port = STDIN.gets.chomp
+
+    print "IdentityFile (leave empty for default): "
+    identity = STDIN.gets.chomp
+
+    extra_opts = {}
+    extra_opts["Port"] = port unless port.empty?
+    extra_opts["IdentityFile"] = identity unless identity.empty?
+
+    @config.add_entry(host, hostname, user, extra_opts)
+    puts "Entry '#{host}' added to #{@config.config_path}"
+
+    print "Connect now? [Y/n]: "
+    answer = STDIN.gets.chomp.downcase
+    if answer.empty? || answer == 'y'
+      exec("ssh", host)
+    end
+  end
+
+  def connect(host, extra_args)
+    entry = @config.find_exact(host)
+
+    if entry
+      args = ["ssh", host] + extra_args
+      exec(*args)
+    else
+      matches = @config.find(host)
+      if matches.length == 1
+        args = ["ssh", matches.first.host] + extra_args
+        exec(*args)
+      elsif matches.length > 1
+        puts "Multiple matches found:"
+        matches.each_with_index do |e, idx|
+          puts "  #{idx + 1}. #{e.host} (#{e.options['HostName']})"
+        end
+        print "Select entry [1-#{matches.length}] or 'n' for new: "
+        input = STDIN.gets.chomp
+        if input.downcase == 'n'
+          create_and_connect(host)
+        else
+          choice = input.to_i
+          if choice >= 1 && choice <= matches.length
+            args = ["ssh", matches[choice - 1].host] + extra_args
+            exec(*args)
+          else
+            STDERR.puts "Invalid selection"
+            exit 1
+          end
+        end
+      else
+        puts "Host '#{host}' not found in config."
+        print "Create new entry? [Y/n]: "
+        answer = STDIN.gets.chomp.downcase
+        if answer.empty? || answer == 'y'
+          create_and_connect(host)
+        end
+      end
+    end
+  end
+
+  def create_and_connect(host)
+    print "HostName (IP or FQDN) [#{host}]: "
+    hostname = STDIN.gets.chomp
+    hostname = host if hostname.empty?
+
+    print "User [#{ENV['USER']}]: "
+    user = STDIN.gets.chomp
+    user = ENV['USER'] if user.empty?
+
+    print "Port [22]: "
+    port = STDIN.gets.chomp
+
+    print "IdentityFile (leave empty for default): "
+    identity = STDIN.gets.chomp
+
+    extra_opts = {}
+    extra_opts["Port"] = port unless port.empty?
+    extra_opts["IdentityFile"] = identity unless identity.empty?
+
+    @config.add_entry(host, hostname, user, extra_opts)
+    puts "Entry '#{host}' added to #{@config.config_path}"
+
+    exec("ssh", host)
+  end
+end
+
+SSHTo.new.run(ARGV)

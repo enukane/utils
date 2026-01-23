@@ -8,7 +8,7 @@ for TARGET in $@; do
 	echo "$TARGET	$TARGET" >> $TMPFILE
 done
 
-deadman -l /tmp/hoge $TMPFILE
+deadman -l /tmp/hoge -a $TMPFILE
 
 
 rm $TMPFILE
