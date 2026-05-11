@@ -1,0 +1,438 @@
+#!/usr/bin/env bash
+#
+# ifctl - macOS network interface control utility
+# USB Ethernet / VLAN インタフェースの一覧・設定・管理
+#
+
+set -eu
+
+# --- bash version check (require 4+ for declare -A) ---
+if (( BASH_VERSINFO[0] < 4 )); then
+    echo "error: bash 4.0+ required (current: ${BASH_VERSION})" >&2
+    echo "  install via: brew install bash" >&2
+    exit 1
+fi
+
+# --- root check ---
+check_root() {
+    if [[ $(id -u) -ne 0 ]]; then
+        echo "error: must be run as root" >&2
+        exit 1
+    fi
+}
+
+# --- usage ---
+usage() {
+    cat <<'EOF'
+Usage: ifctl [command] [args...]
+
+Commands:
+  (none), list                              Show USB Ethernet and VLAN interfaces
+  add <ifname> <addr/mask> [gw <gateway>]   Set address (replaces existing)
+  del <ifname>                              Delete address and gateway
+  add-vlan <ifname> <vlan_id>               Create VLAN interface
+  del-vlan <vlan_id>                        Delete VLAN interface(s)
+EOF
+    exit "${1:-1}"
+}
+
+# --- global array declarations ---
+declare -a IFCFG_IFS
+declare -A IFCFG_ETHER
+declare -A IFCFG_ADDRS
+declare -A IFCFG_STATUS
+declare -A IFCFG_VLAN_TAG
+declare -A IFCFG_VLAN_PARENT
+
+declare -a NSETUP_DEVICES
+declare -A NSETUP_NAME
+declare -A NSETUP_VLANS
+declare -A NSETUP_VLAN_PARENT
+declare -A NSETUP_VLAN_NAME
+
+# --- helpers ---
+
+# hex_mask_to_cidr: convert hex netmask (e.g. 0xffffff00) to CIDR prefix (e.g. 24)
+hex_mask_to_cidr() {
+    local mask cidr=32
+    printf -v mask '%d' "$1"
+    while (( cidr > 0 && (mask & 1) == 0 )); do
+        mask=$(( mask >> 1 ))
+        cidr=$(( cidr - 1 ))
+    done
+    echo "$cidr"
+}
+
+# parse_ifconfig: parse `ifconfig -a` output into global arrays
+parse_ifconfig() {
+    IFCFG_IFS=()
+    local cur_if=""
+
+    while IFS= read -r line; do
+        # Interface header: ^([a-zA-Z0-9]+): flags=
+        if [[ "$line" =~ ^([a-zA-Z0-9]+):\ flags= ]]; then
+            cur_if="${BASH_REMATCH[1]}"
+            IFCFG_IFS+=("$cur_if")
+            IFCFG_ETHER["$cur_if"]=""
+            IFCFG_ADDRS["$cur_if"]=""
+            IFCFG_STATUS["$cur_if"]=""
+            IFCFG_VLAN_TAG["$cur_if"]=""
+            IFCFG_VLAN_PARENT["$cur_if"]=""
+            continue
+        fi
+
+        [[ -z "$cur_if" ]] && continue
+
+        # MAC: ether ([0-9a-f:]+)
+        if [[ "$line" =~ ether\ ([0-9a-f:]+) ]]; then
+            IFCFG_ETHER["$cur_if"]="${BASH_REMATCH[1]}"
+            continue
+        fi
+
+        # IPv4: inet ([0-9.]+) netmask (0x[0-9a-fA-F]+)
+        if [[ "$line" =~ inet\ ([0-9.]+)\ netmask\ (0x[0-9a-fA-F]+) ]]; then
+            local addr="${BASH_REMATCH[1]}"
+            local cidr
+            cidr=$(hex_mask_to_cidr "${BASH_REMATCH[2]}")
+            local entry="${addr}/${cidr}"
+            if [[ -z "${IFCFG_ADDRS[$cur_if]:-}" ]]; then
+                IFCFG_ADDRS["$cur_if"]="$entry"
+            else
+                IFCFG_ADDRS["$cur_if"]="${IFCFG_ADDRS[$cur_if]} $entry"
+            fi
+            continue
+        fi
+
+        # IPv6: inet6 ([^ ]+) prefixlen ([0-9]+)
+        if [[ "$line" =~ inet6\ ([^\ ]+)\ prefixlen\ ([0-9]+) ]]; then
+            local addr6="${BASH_REMATCH[1]}"
+            local plen="${BASH_REMATCH[2]}"
+            local entry6="${addr6}/${plen}"
+            if [[ -z "${IFCFG_ADDRS[$cur_if]:-}" ]]; then
+                IFCFG_ADDRS["$cur_if"]="$entry6"
+            else
+                IFCFG_ADDRS["$cur_if"]="${IFCFG_ADDRS[$cur_if]} $entry6"
+            fi
+            continue
+        fi
+
+        # Status: status: (.+)
+        if [[ "$line" =~ status:\ (.+) ]]; then
+            IFCFG_STATUS["$cur_if"]="${BASH_REMATCH[1]}"
+            continue
+        fi
+
+        # VLAN: vlan: ([0-9]+) parent interface: ([a-zA-Z0-9]+)
+        if [[ "$line" =~ vlan:\ ([0-9]+)\ parent\ interface:\ ([a-zA-Z0-9]+) ]]; then
+            IFCFG_VLAN_TAG["$cur_if"]="${BASH_REMATCH[1]}"
+            IFCFG_VLAN_PARENT["$cur_if"]="${BASH_REMATCH[2]}"
+            continue
+        fi
+
+    done < <(ifconfig -a 2>/dev/null)
+}
+
+# parse_networksetup: parse `networksetup -listallhardwareports` output into global arrays
+parse_networksetup() {
+    NSETUP_DEVICES=()
+    local in_vlan_section=0
+    local cur_dev=""
+    local cur_name=""
+    local cur_vlan_name=""
+    local cur_vlan_parent=""
+    local cur_vlan_dev=""
+
+    while IFS= read -r line; do
+        # Detect VLAN Configurations section
+        if [[ "$line" =~ ^VLAN\ Configurations ]]; then
+            in_vlan_section=1
+            continue
+        fi
+
+        if (( in_vlan_section == 0 )); then
+            # Hardware port section
+            if [[ "$line" =~ ^Hardware\ Port:\ (.+)$ ]]; then
+                cur_name="${BASH_REMATCH[1]}"
+                cur_dev=""
+                continue
+            fi
+            if [[ "$line" =~ ^Device:\ ([a-zA-Z0-9]+)$ ]]; then
+                cur_dev="${BASH_REMATCH[1]}"
+                if [[ -n "$cur_dev" ]]; then
+                    NSETUP_DEVICES+=("$cur_dev")
+                    NSETUP_NAME["$cur_dev"]="${cur_name:-}"
+                fi
+                continue
+            fi
+        else
+            # VLAN section
+            # VLAN User Defined Name: <name>
+            if [[ "$line" =~ ^VLAN\ User\ Defined\ Name:\ (.+)$ ]]; then
+                cur_vlan_name="${BASH_REMATCH[1]}"
+                cur_vlan_parent=""
+                cur_vlan_dev=""
+                continue
+            fi
+            # Parent Device: <parent>
+            if [[ "$line" =~ ^Parent\ Device:\ ([a-zA-Z0-9]+)$ ]]; then
+                cur_vlan_parent="${BASH_REMATCH[1]}"
+                continue
+            fi
+            # Device ("Hardware" Port): <vlan_dev>  — note: macOS uses varying quotes
+            if [[ "$line" =~ ^Device\ \(.*\):\ ([a-zA-Z0-9]+)$ ]]; then
+                cur_vlan_dev="${BASH_REMATCH[1]}"
+                continue
+            fi
+            # Tag: <tag>
+            if [[ "$line" =~ ^Tag:\ ([0-9]+)$ ]]; then
+                local tag="${BASH_REMATCH[1]}"
+                if [[ -n "$cur_vlan_dev" ]]; then
+                    NSETUP_VLANS["$cur_vlan_dev"]="$tag"
+                    NSETUP_VLAN_PARENT["$cur_vlan_dev"]="${cur_vlan_parent:-}"
+                    NSETUP_VLAN_NAME["$cur_vlan_dev"]="${cur_vlan_name:-}"
+                fi
+                continue
+            fi
+        fi
+
+    done < <(networksetup -listallhardwareports 2>/dev/null)
+}
+
+# get_default_gw: get default gateway for a given interface from netstat -rn
+get_default_gw() {
+    local ifname="$1"
+    netstat -rn -f inet 2>/dev/null | awk -v ifn="$ifname" \
+        '$1 == "default" && $NF == ifn { print $2; exit }'
+}
+
+# _clear_if_addr: delete all IPv4 addresses and scoped default route from interface
+_clear_if_addr() {
+    local ifname="$1"
+
+    local old_addrs
+    old_addrs=$(ifconfig "$ifname" 2>/dev/null | awk '/inet / { print $2 }')
+    for old in $old_addrs; do
+        echo "  deleting address $old from $ifname"
+        ifconfig "$ifname" inet "$old" delete 2>/dev/null || true
+    done
+
+    route delete -ifscope "$ifname" default 2>/dev/null || true
+}
+
+# --- command functions ---
+cmd_list() {
+    parse_ifconfig
+    parse_networksetup
+
+    # Build a set of NSETUP_DEVICES for O(1) lookup
+    declare -A _nsetup_dev_set
+    if [[ ${#NSETUP_DEVICES[@]} -gt 0 ]]; then
+        for _dev in "${NSETUP_DEVICES[@]}"; do
+            _nsetup_dev_set["$_dev"]=1
+        done
+    fi
+
+    # Patterns to exclude by interface name
+    local _sys_pat='^(lo[0-9]*|bridge[0-9]*|awdl[0-9]*|llw[0-9]*|ap[0-9]*|gif[0-9]*|stf[0-9]*|anpi[0-9]*|utun[0-9]*)$'
+
+    # Patterns to exclude by Hardware Port name
+    local _hw_excl='Wi-Fi|Thunderbolt|Bluetooth|FireWire'
+
+    # Collect qualifying hardware-port interfaces
+    declare -a _show_ifs=()
+    for _ifname in "${IFCFG_IFS[@]:+"${IFCFG_IFS[@]}"}"; do
+        # Must be active in ifconfig
+        [[ "${IFCFG_STATUS[$_ifname]:-}" == "active" ]] || continue
+        # Must appear in networksetup devices
+        [[ "${_nsetup_dev_set[$_ifname]:-}" == "1" ]] || continue
+        # Exclude system interfaces by name pattern
+        [[ "$_ifname" =~ $_sys_pat ]] && continue
+        # Exclude by Hardware Port name keyword
+        local _hwname="${NSETUP_NAME[$_ifname]:-}"
+        [[ "$_hwname" =~ ($_hw_excl) ]] && continue
+        _show_ifs+=("$_ifname")
+    done
+
+    # Collect qualifying VLAN interfaces (active in ifconfig, in NSETUP_VLANS)
+    declare -a _show_vlans
+    if [[ ${#NSETUP_VLANS[@]} -gt 0 ]]; then
+        for _vdev in "${!NSETUP_VLANS[@]}"; do
+            [[ "${IFCFG_STATUS[$_vdev]:-}" == "active" ]] || continue
+            _show_vlans+=("$_vdev")
+        done
+    fi
+
+    # Print a single interface entry
+    _print_if() {
+        local _if="$1"
+
+        # Determine type and name
+        local _tag="${IFCFG_VLAN_TAG[$_if]:-}"
+        local _type _name
+        if [[ -n "$_tag" ]]; then
+            _type="vlan"
+            _name="${NSETUP_VLAN_NAME[$_if]:-unknown}"
+        elif [[ -n "${NSETUP_NAME[$_if]:-}" ]]; then
+            _type="eth"
+            _name="${NSETUP_NAME[$_if]}"
+        else
+            _type="other"
+            _name="unknown"
+        fi
+
+        local _mac="${IFCFG_ETHER[$_if]:-}"
+        local _gw
+        _gw=$(get_default_gw "$_if")
+
+        echo "${_if}:"
+        echo "  name: ${_name}"
+        echo "  type: ${_type}"
+        echo "  macaddr: ${_mac}"
+        echo "  addr:"
+        if [[ -n "${IFCFG_ADDRS[$_if]:-}" ]]; then
+            for _addr in ${IFCFG_ADDRS[$_if]}; do
+                echo "    - ${_addr}"
+            done
+        fi
+        echo "  gw: ${_gw}"
+
+        # vlan: child VLAN tags whose parent is this interface
+        echo "  vlan:"
+        if [[ ${#IFCFG_VLAN_PARENT[@]} -gt 0 ]]; then
+            for _child in "${!IFCFG_VLAN_PARENT[@]}"; do
+                if [[ "${IFCFG_VLAN_PARENT[$_child]:-}" == "$_if" ]]; then
+                    echo "    - ${IFCFG_VLAN_TAG[$_child]:-}"
+                fi
+            done
+        fi
+
+        echo "  tag: ${_tag}"
+    }
+
+    if [[ ${#_show_ifs[@]} -gt 0 ]]; then
+        for _ifname in "${_show_ifs[@]}"; do
+            _print_if "$_ifname"
+        done
+    fi
+    if [[ ${#_show_vlans[@]} -gt 0 ]]; then
+        for _vdev in "${_show_vlans[@]}"; do
+            _print_if "$_vdev"
+        done
+    fi
+}
+cmd_add() {
+    if [[ $# -lt 2 ]]; then
+        echo "Usage: ifctl add <ifname> <addr/mask> [gw <gateway>]" >&2
+        exit 1
+    fi
+
+    local ifname="$1"
+    local addr_cidr="$2"
+    local gw=""
+
+    if [[ $# -ge 4 && "$3" == "gw" ]]; then
+        gw="$4"
+    fi
+
+    if ! ifconfig "$ifname" >/dev/null 2>&1; then
+        echo "error: interface $ifname not found" >&2
+        exit 1
+    fi
+
+    _clear_if_addr "$ifname"
+
+    echo "  setting $addr_cidr on $ifname"
+    ifconfig "$ifname" inet "$addr_cidr"
+
+    if [[ -n "$gw" ]]; then
+        echo "  adding default route via $gw (scoped to $ifname)"
+        route add -ifscope "$ifname" default "$gw" >/dev/null
+    fi
+
+    echo "done."
+}
+cmd_del() {
+    if [[ $# -lt 1 ]]; then
+        echo "Usage: ifctl del <ifname>" >&2
+        exit 1
+    fi
+
+    local ifname="$1"
+
+    if ! ifconfig "$ifname" >/dev/null 2>&1; then
+        echo "error: interface $ifname not found" >&2
+        exit 1
+    fi
+
+    _clear_if_addr "$ifname"
+
+    echo "done."
+}
+cmd_add_vlan() {
+    if [[ $# -lt 2 ]]; then
+        echo "Usage: ifctl add-vlan <ifname> <vlan_id>" >&2
+        exit 1
+    fi
+
+    local parent="$1"
+    local vlan_id="$2"
+
+    if ! ifconfig "$parent" >/dev/null 2>&1; then
+        echo "error: parent interface $parent not found" >&2
+        exit 1
+    fi
+
+    local vlan_if
+    vlan_if=$(ifconfig vlan create)
+    echo "  created $vlan_if"
+
+    if ! ifconfig "$vlan_if" vlan "$vlan_id" vlandev "$parent" 2>&1; then
+        echo "error: failed to configure vlan, destroying $vlan_if" >&2
+        ifconfig "$vlan_if" destroy 2>/dev/null || true
+        exit 1
+    fi
+    echo "  set vlan $vlan_id on $vlan_if (parent: $parent)"
+
+    echo "done."
+}
+cmd_del_vlan() {
+    if [[ $# -lt 1 ]]; then
+        echo "Usage: ifctl del-vlan <vlan_id>" >&2
+        exit 1
+    fi
+
+    local vlan_id="$1"
+    local found=0
+    local cur_if=""
+
+    while IFS= read -r line; do
+        if [[ "$line" =~ ^([a-zA-Z0-9]+):\ flags= ]]; then
+            cur_if="${BASH_REMATCH[1]}"
+        fi
+        if [[ "$line" =~ vlan:\ ([0-9]+)\ parent\ interface: ]]; then
+            if [[ "${BASH_REMATCH[1]}" == "$vlan_id" && -n "$cur_if" ]]; then
+                echo "  destroying $cur_if (vlan $vlan_id)"
+                ifconfig "$cur_if" destroy
+                found=1
+            fi
+        fi
+    done < <(ifconfig -a 2>/dev/null)
+
+    if (( found == 0 )); then
+        echo "error: no interface found with vlan id $vlan_id" >&2
+        exit 1
+    fi
+
+    echo "done."
+}
+
+# --- main ---
+case "${1:-list}" in
+    list)       cmd_list ;;
+    add)        check_root; shift; cmd_add "$@" ;;
+    del)        check_root; shift; cmd_del "$@" ;;
+    add-vlan)   check_root; shift; cmd_add_vlan "$@" ;;
+    del-vlan)   check_root; shift; cmd_del_vlan "$@" ;;
+    -h|--help)  usage 0 ;;
+    *)          echo "error: unknown command: $1" >&2; usage ;;
+esac
