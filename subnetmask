@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+#
+# subnetmask - subnet mask calculator
+#
+
+set -eu
+
+usage() {
+    cat <<'EOF'
+Usage: subnetmask <addr/prefix | mask | /prefix>
+
+Examples:
+  subnetmask 10.31.0.1/27
+  subnetmask 255.255.255.224
+  subnetmask /27
+EOF
+    exit "${1:-1}"
+}
+
+# --- helpers ---
+
+ip_to_int() {
+    local IFS='.'
+    read -r a b c d <<< "$1"
+    echo $(( (a << 24) | (b << 16) | (c << 8) | d ))
+}
+
+int_to_ip() {
+    printf '%d.%d.%d.%d' \
+        $(( ($1 >> 24) & 0xFF )) $(( ($1 >> 16) & 0xFF )) \
+        $(( ($1 >> 8) & 0xFF )) $(( $1 & 0xFF ))
+}
+
+cidr_to_mask_int() {
+    if (( $1 == 0 )); then
+        echo 0
+    else
+        echo $(( (0xFFFFFFFF << (32 - $1)) & 0xFFFFFFFF ))
+    fi
+}
+
+mask_int_to_cidr() {
+    local mask=$1 cidr=0
+    while (( cidr < 32 && (mask & (1 << (31 - cidr))) != 0 )); do
+        cidr=$(( cidr + 1 ))
+    done
+    echo "$cidr"
+}
+
+# --- parse input ---
+
+input="${1:-}"
+if [[ -z "$input" ]]; then
+    usage
+fi
+
+ip=""
+cidr=""
+mask_int=""
+
+if [[ "$input" == */* ]]; then
+    cidr="${input##*/}"
+    ip_part="${input%%/*}"
+    if [[ -n "$ip_part" ]]; then
+        ip="$ip_part"
+    fi
+    mask_int=$(cidr_to_mask_int "$cidr")
+elif [[ "$input" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    mask_int=$(ip_to_int "$input")
+    cidr=$(mask_int_to_cidr "$mask_int")
+else
+    echo "error: invalid input: $input" >&2
+    usage
+fi
+
+# --- calculate ---
+
+mask_dotted=$(int_to_ip "$mask_int")
+
+if (( (32 - cidr) < 63 )); then
+    total=$(( 1 << (32 - cidr) ))
+else
+    total=0
+fi
+
+if (( total >= 2 )); then
+    hosts=$(( total - 2 ))
+else
+    hosts=0
+fi
+
+# --- output ---
+
+printf "netmask:\t/%d (%s)\n" "$cidr" "$mask_dotted"
+
+if [[ -n "$ip" ]]; then
+    ip_int=$(ip_to_int "$ip")
+    net_int=$(( ip_int & mask_int ))
+    wildcard=$(( (~mask_int) & 0xFFFFFFFF ))
+    bcast_int=$(( net_int | wildcard ))
+    start_int=$(( net_int + 1 ))
+    end_int=$(( bcast_int - 1 ))
+
+    printf "net addr:\t%s\n" "$(int_to_ip "$net_int")"
+    printf "bcast addr:\t%s\n" "$(int_to_ip "$bcast_int")"
+    printf "start addr:\t%s\n" "$(int_to_ip "$start_int")"
+    printf "end addr:\t%s\n" "$(int_to_ip "$end_int")"
+fi
+
+printf "#addrs:\t\t%d (host %d)\n" "$total" "$hosts"
