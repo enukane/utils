@@ -118,6 +118,8 @@ class SSHTo
             '--edit[Edit entry for HOSTNAME]:hostname:_sshto_hosts'
             '-a[Add new entry]'
             '--add[Add new entry]'
+            '-r[Remove ADDRESS from known_hosts]:address:_sshto_known_hosts'
+            '--remove-known-host[Remove ADDRESS from known_hosts]:address:_sshto_known_hosts'
             '-h[Show help]'
             '--help[Show help]'
         )
@@ -133,6 +135,14 @@ class SSHTo
         fi
     }
 
+    _sshto_known_hosts() {
+        local -a addrs
+        if [[ -f ~/.ssh/known_hosts ]]; then
+            addrs=(${(f)"$(awk '{split($1,a,\",\"); for(i in a) print a[i]}' ~/.ssh/known_hosts | sort -u)"})
+            _describe 'address' addrs
+        fi
+    }
+
     _sshto "$@"
   ZSH
 
@@ -142,12 +152,18 @@ class SSHTo
         COMPREPLY=()
         cur="${COMP_WORDS[COMP_CWORD]}"
         prev="${COMP_WORDS[COMP_CWORD-1]}"
-        opts="-l --list -e --edit -a --add -h --help"
+        opts="-l --list -e --edit -a --add -r --remove-known-host -h --help"
 
         case "${prev}" in
             -l|--list|-e|--edit)
                 hosts=$(awk '/^Host / && !/\*/ {print $2}' ~/.ssh/config 2>/dev/null)
                 COMPREPLY=( $(compgen -W "${hosts}" -- ${cur}) )
+                return 0
+                ;;
+            -r|--remove-known-host)
+                local addrs
+                addrs=$(awk '{split($1,a,","); for(i in a) print a[i]}' ~/.ssh/known_hosts 2>/dev/null | sort -u)
+                COMPREPLY=( $(compgen -W "${addrs}" -- ${cur}) )
                 return 0
                 ;;
         esac
@@ -195,6 +211,10 @@ class SSHTo
         options[:add] = true
       end
 
+      opts.on("-r", "--remove-known-host ADDRESS", "Remove ADDRESS from ~/.ssh/known_hosts") do |addr|
+        options[:remove_known_host] = addr
+      end
+
       opts.on("-h", "--help", "Show this help") do
         puts opts
         exit
@@ -215,6 +235,8 @@ class SSHTo
       edit_entry(options[:edit])
     elsif options[:add]
       add_new_entry
+    elsif options[:remove_known_host]
+      remove_known_host(options[:remove_known_host])
     elsif args.empty?
       puts parser
       exit 1
@@ -366,6 +388,26 @@ class SSHTo
     answer = STDIN.gets.chomp.downcase
     if answer.empty? || answer == 'y'
       exec("ssh", host)
+    end
+  end
+
+  def remove_known_host(address)
+    known_hosts_path = File.expand_path("~/.ssh/known_hosts")
+
+    unless File.exist?(known_hosts_path)
+      STDERR.puts "#{known_hosts_path} not found"
+      exit 1
+    end
+
+    lines = File.readlines(known_hosts_path)
+    remaining = lines.reject { |line| line.split(/[\s,]/).any? { |field| field == address } }
+    removed_count = lines.length - remaining.length
+
+    if removed_count == 0
+      puts "No entries found for '#{address}' in #{known_hosts_path}"
+    else
+      File.write(known_hosts_path, remaining.join)
+      puts "Removed #{removed_count} entry(s) for '#{address}' from #{known_hosts_path}"
     end
   end
 
